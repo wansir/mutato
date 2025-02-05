@@ -1,0 +1,199 @@
+apiVersion: mutations.mutato.kubesphere.io/v1alpha1
+kind: Dynamic
+metadata:
+  name: resources-mutation
+spec:
+  rego: |
+    package mutating
+
+    import rego.v1
+
+    modified := result if {
+    	pod := input
+    	containers := [adjusted_containers | container := pod.spec.containers[_]; adjusted_containers = adjust_container(container)]
+    	initContainers := [adjusted_containers | container := pod.spec.initContainers[_]; adjusted_containers = adjust_container(container)]
+    	result := object.union(input, new_containers(initContainers,containers))
+    }
+
+    new_containers(initContainers, containers) := result if {
+    	count(initContainers) > 0
+    	result := {"spec": {"initContainers": initContainers, "containers": containers}}
+    } else := result if {
+    	result := {"spec": {"containers": containers}}
+    }
+
+    adjust_container(container) := result if {
+    	# 获取 limits 和 requests 的 CPU 和内存值
+    	limit_cpu := canonify_cpu(object.get(container, ["resources", "limits", "cpu"], "0"))
+    	request_cpu := canonify_cpu(object.get(container, ["resources", "requests", "cpu"], "0"))
+    	limit_memory := canonify_mem(object.get(container, ["resources", "limits", "memory"], "0"))
+    	request_memory := canonify_mem(object.get(container, ["resources", "requests", "memory"], "0"))
+
+    	# 设定 request/limit 最小比例为 0.5
+    	ratio := 0.5
+
+    	# 计算最小请求值
+    	min_cpu := limit_cpu * ratio
+    	min_memory := limit_memory * ratio
+
+    	# 计算调整后的 CPU 和内存请求值
+    	adjusted_cpu := min([limit_cpu, max([request_cpu, min_cpu])])
+    	adjusted_memory := min([limit_memory, max([request_memory, min_memory])])
+
+    	# 生成新的资源对象，保持 limits 不变，但更新 requests，合并结果，更新 container 的 resources
+    	result := object.union(container, {"resources": new_resources(adjusted_cpu,adjusted_memory)})
+    }
+
+    new_resources(adjusted_cpu,adjusted_memory) := result if {
+    	adjusted_cpu > 0
+        adjusted_memory > 0
+    	result := {"requests": {
+    		"cpu": sprintf("%vm", [adjusted_cpu]),
+    		"memory": sprintf("%vm", [adjusted_memory])
+    	}}
+    } else := result if {
+    	adjusted_cpu > 0
+    	result := {"requests": {
+    		"cpu": sprintf("%vm", [adjusted_cpu]),
+    	}}
+    } else := result if {
+    	adjusted_memory > 0
+    	result := {"requests": {
+    		"memory": sprintf("%vm", [adjusted_memory])
+    	}}
+    } else := result if {
+    	result := {}
+    }
+
+    canonify_cpu(orig) := new if {
+    	orig == null
+    	new := 0
+    }
+
+    canonify_cpu(orig) := new if {
+    	is_number(orig)
+    	new := orig * 1000
+    }
+
+    canonify_cpu(orig) := new if {
+    	not is_number(orig)
+    	endswith(orig, "m")
+    	new := to_number(replace(orig, "m", ""))
+    }
+
+    canonify_cpu(orig) := new if {
+    	not is_number(orig)
+    	not endswith(orig, "m")
+    	regex.match("^[0-9]+$", orig)
+    	new := to_number(orig) * 1000
+    }
+
+    canonify_cpu(orig) := new if {
+    	not is_number(orig)
+    	not endswith(orig, "m")
+    	regex.match("^[0-9]+[.][0-9]+$", orig)
+    	new := to_number(orig) * 1000
+    }
+
+    # 10 ** 21
+    mem_multiple("E") := 1000000000000000000000
+
+    # 10 ** 18
+    mem_multiple("P") := 1000000000000000000
+
+    # 10 ** 15
+    mem_multiple("T") := 1000000000000000
+
+    # 10 ** 12
+    mem_multiple("G") := 1000000000000
+
+    # 10 ** 9
+    mem_multiple("M") := 1000000000
+
+    # 10 ** 6
+    mem_multiple("k") := 1000000
+
+    # 10 ** 3
+    mem_multiple("") := 1000
+
+    # Kubernetes accepts millibyte precision when it probably shouldn't.
+    # https://github.com/kubernetes/kubernetes/issues/28741
+    # 10 ** 0
+    mem_multiple("m") := 1
+
+    # 1000 * 2 ** 10
+    mem_multiple("Ki") := 1024000
+
+    # 1000 * 2 ** 20
+    mem_multiple("Mi") := 1048576000
+
+    # 1000 * 2 ** 30
+    mem_multiple("Gi") := 1073741824000
+
+    # 1000 * 2 ** 40
+    mem_multiple("Ti") := 1099511627776000
+
+    # 1000 * 2 ** 50
+    mem_multiple("Pi") := 1125899906842624000
+
+    # 1000 * 2 ** 60
+    mem_multiple("Ei") := 1152921504606846976000
+
+    get_suffix(mem) := suffix if {
+    	not is_string(mem)
+    	suffix := ""
+    }
+
+    get_suffix(mem) := suffix if {
+    	is_string(mem)
+    	count(mem) > 0
+    	suffix := substring(mem, count(mem) - 1, -1)
+    	mem_multiple(suffix)
+    }
+
+    get_suffix(mem) := suffix if {
+    	is_string(mem)
+    	count(mem) > 1
+    	suffix := substring(mem, count(mem) - 2, -1)
+    	mem_multiple(suffix)
+    }
+
+    get_suffix(mem) := suffix if {
+    	is_string(mem)
+    	count(mem) > 1
+    	not mem_multiple(substring(mem, count(mem) - 1, -1))
+    	not mem_multiple(substring(mem, count(mem) - 2, -1))
+    	suffix := ""
+    }
+
+    get_suffix(mem) := suffix if {
+    	is_string(mem)
+    	count(mem) == 1
+    	not mem_multiple(substring(mem, count(mem) - 1, -1))
+    	suffix := ""
+    }
+
+    get_suffix(mem) := suffix if {
+    	is_string(mem)
+    	count(mem) == 0
+    	suffix := ""
+    }
+
+    canonify_mem(orig) := new if {
+    	is_number(orig)
+    	new := orig * 1000
+    }
+
+    canonify_mem(orig) := new if {
+    	not is_number(orig)
+    	suffix := get_suffix(orig)
+    	raw := replace(orig, suffix, "")
+    	regex.match("^[0-9]+(\\.[0-9]+)?$", raw)
+    	new := to_number(raw) * mem_multiple(suffix)
+    }
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces:
+      - "test"

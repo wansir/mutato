@@ -1,0 +1,54 @@
+{{- $ca := genCA "self-signed-ca" 3650 }}
+{{- $cn := "mutato-webhook" }}
+{{- $altName1 := printf "mutato-webhook.%s" .Release.Namespace }}
+{{- $altName2 := printf "mutato-webhook.%s.svc" .Release.Namespace }}
+{{- $cert := genSignedCert $cn nil (list $altName1 $altName2) 3650 $ca }}
+
+apiVersion: v1
+data:
+  ca.crt: {{ b64enc $ca.Cert | quote }}
+  tls.crt: {{ b64enc  $cert.Cert | quote }}
+  tls.key: {{ b64enc  $cert.Key | quote }}
+kind: Secret
+metadata:
+  name: mutato-webhook-certs
+type: Opaque
+
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: mutato.kubesphere.io
+webhooks:
+  - admissionReviewVersions:
+      - v1
+    clientConfig:
+      caBundle: {{ b64enc $ca.Cert | quote }}
+      service:
+        name: mutato-webhook
+        namespace: {{ .Release.Namespace }}
+        path: /mutate
+        port: {{ .Values.service.port }}
+    failurePolicy: Fail
+    matchPolicy: Exact
+    name: mutating.mutato.kubesphere.io
+    namespaceSelector:
+      matchExpressions:
+        - key: kubesphere.io/workspace
+          operator: NotIn
+          values:
+            - system-workspace
+    objectSelector: {}
+    rules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - 'CREATE'
+          - 'UPDATE'
+        resources:
+          - pods
+        scope: '*'
+    sideEffects: None
+    timeoutSeconds: 30

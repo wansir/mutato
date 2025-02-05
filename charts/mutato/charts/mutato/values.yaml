@@ -1,0 +1,41 @@
+replicaCount: 1
+image:
+  repository: docker.io/kubespheredev/mutato-webhook-server
+  pullPolicy: Always
+  tag: "v0.1.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 9443
+
+resources: {}
+
+volumes:
+  - name: mutato-webhook-certs
+    secret:
+      defaultMode: 420
+      secretName: mutato-webhook-certs
+
+volumeMounts:
+  - mountPath: /tmp/k8s-webhook-server/serving-certs
+    name: mutato-webhook-certs
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
